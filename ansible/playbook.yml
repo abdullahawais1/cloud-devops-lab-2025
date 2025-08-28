@@ -1,0 +1,89 @@
+- name: Configure EC2 instances
+  hosts: all
+  become: yes
+  vars_files:
+    - secrets.yml   # load secrets from Vault
+
+  tasks:
+    - name: Update packages
+      yum:
+        name: "*"
+        state: latest
+
+    - name: Install basic tools
+      yum:
+        name:
+          - git
+          - python3
+          - docker
+        state: present
+
+    - name: Start and enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Install Docker Compose
+      get_url:
+        url: https://github.com/docker/compose/releases/download/v2.23.1/docker-compose-linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Install Fail2Ban
+      yum:
+        name: fail2ban
+        state: present
+
+    - name: Start and enable Fail2Ban
+      service:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    - name: Ensure SSH jail is enabled
+      copy:
+        dest: /etc/fail2ban/jail.d/ssh.conf
+        content: |
+          [sshd]
+          enabled = true
+          port = ssh
+          logpath = /var/log/secure
+          maxretry = 5
+      notify: restart fail2ban
+
+    # 🔹 New Section: User Access
+    - name: Create devops user
+      user:
+        name: devops
+        password: "{{ vault_devops_password | password_hash('sha512') }}"
+        groups: docker,wheel
+        append: yes
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Add SSH authorized key for devops user
+      authorized_key:
+        user: devops
+        state: present
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"  # change to your public key path
+
+    - name: Disable root SSH login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+        backup: yes
+      notify: restart ssh
+
+  handlers:
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+
+    - name: restart ssh
+      service:
+        name: sshd
+        state: restarted
